@@ -1,0 +1,26 @@
+# Dry-run config. Points at a Tronbyt server that doesn't exist so the
+# daemon's startup PATCHes will fail loudly but the daemon itself stays up.
+# Used to confirm the daemon boots end-to-end on this machine.
+
+[tronbyt]
+server_url = "http://127.0.0.1:1"
+device_id = "dryrun"
+api_key = "x"
+installation_id = "crunchybyt"
+
+[playback]
+chunk_seconds = 15
+fps = 10
+fit_mode = "crop"
+quality = 75
+min_tail_seconds = 3
+
+[library]
+chunks_root = "/tmp/crunchybyt-dryrun/chunks"
+sources_root = "/tmp/crunchybyt-dryrun/sources"
+
+[daemon]
+host = "127.0.0.1"
+port = 8765
+state_db = "/tmp/crunchybyt-dryrun/state.sqlite"
+push_lead_seconds = 2
