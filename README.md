@@ -38,8 +38,20 @@ Play old anime episodes on a 64×32 Tronbyt display. Two modes:
 - Tronbyt server running and reachable from the Pi (you have this).
 - Device API key (Tronbyt UI → device → "Show API key").
 - `ffmpeg` + `ffprobe` on whatever machine runs the ingest (Mac, Pi, etc.).
-- `yt-dlp` (installed automatically as a Python dep). For live mode only.
+- `yt-dlp` (installed automatically as a Python dep). For YouTube sources only.
 - Python 3.10+.
+- **A JavaScript runtime, for any YouTube source.** YouTube needs one to solve
+  its signature challenge; without it every media URL comes back `403` and you
+  get no video at all. Install one of `quickjs` (smallest — Debian and Pi OS
+  ship it, binary is `qjs`), `deno` >= 2.3, `bun` >= 1.2.11, or `node` >= 22.
+  Debian's `nodejs` is currently 20.x, which yt-dlp rejects as unsupported.
+
+  yt-dlp only auto-detects `deno`, so anything else must be named explicitly.
+  Simplest is a system-wide `/etc/yt-dlp.conf` containing:
+
+  ```
+  --js-runtimes quickjs
+  ```
 
 ## Install (on the Pi)
 
@@ -138,12 +150,24 @@ you — it shows both the desired fit and the fit baked into the chunk on disk.
 
 ## Live mode
 
+> **Experimental, and currently degraded.** As of August 2026 YouTube's CDN
+> serves only the *first* bounded byte range on a freshly resolved URL and
+> returns `403` for subsequent ones, so a session yields roughly 45 seconds of
+> video and then ends and advances. The practical result is short clips with
+> gaps, not continuous playback. Sustaining a stream would require re-resolving
+> (several seconds of signature-challenge work) per megabyte, which isn't
+> worth it. **Library mode is the supported path** — ingest once, play from
+> disk, no dependency on YouTube at playback time.
+
 ```bash
 crunchybyt live https://www.youtube.com/watch?v=<some-24/7-channel>
 crunchybyt live 'https://www.youtube.com/playlist?list=<playlist-id>'
 crunchybyt live 'https://www.youtube.com/watch?v=<vid>&list=<playlist-id>'
 ```
 
+- `yt-dlp` fetches the stream in bounded chunks and pipes it to `ffmpeg`.
+  (ffmpeg can't open a `googlevideo` URL directly — it has no way to issue the
+  bounded range requests the CDN now insists on.)
 - `yt-dlp` resolves the URL to a direct stream (handles HLS, DASH, etc.).
 - `ffmpeg` pulls the stream, scales to 64×32, emits raw RGB frames.
 - Daemon groups every `fps * chunk_seconds` frames into one animated WebP via
