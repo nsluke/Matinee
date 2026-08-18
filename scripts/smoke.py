@@ -2,7 +2,7 @@
 
 1. Spin up a fake Tronbyt server on 127.0.0.1 that records pushes.
 2. Build a temp library: 1 show / 2 episodes / 3 chunks each.
-3. Start the crunchybyt daemon pointing at the fake server.
+3. Start the matinee daemon pointing at the fake server.
 4. Drive the daemon via its HTTP API and assert the fake server saw the
    right sequence of pushes.
 """
@@ -116,7 +116,7 @@ def write_config(path: Path, tronbyt_port: int, daemon_port: int, root: Path) ->
 server_url = "http://127.0.0.1:{tronbyt_port}"
 device_id = "dev-1"
 api_key = "{EXPECTED_KEY}"
-installation_id = "crunchybyt"
+installation_id = "matinee"
 
 [playback]
 chunk_seconds = 1
@@ -159,7 +159,7 @@ class StubFrameSource:
 
 def install_live_stubs(frames_per_session: int) -> None:
     """Monkeypatch live.py to avoid yt-dlp and ffmpeg."""
-    from crunchybyt import live as live_mod
+    from matinee import live as live_mod
 
     live_mod.resolve_stream_url = lambda url, timeout=30.0: f"stream:{url}"
 
@@ -199,8 +199,8 @@ def main() -> None:
         fake_ready.wait(5)
 
         # start the daemon in this process (background thread)
-        from crunchybyt.daemon import Player, build_app
-        from crunchybyt.config import load
+        from matinee.daemon import Player, build_app
+        from matinee.config import load
 
         cfg = load(cfg_path)
         # Install live-mode stubs before constructing the Player so the

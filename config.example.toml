@@ -1,5 +1,5 @@
-# Copy to config.toml and edit. Path resolved from $CRUNCHYBYT_CONFIG, then
-# ./config.toml, then ~/.config/crunchybyt/config.toml.
+# Copy to config.toml and edit. Path resolved from $MATINEE_CONFIG, then
+# ./config.toml, then ~/.config/matinee/config.toml.
 
 [tronbyt]
 # Base URL of the Tronbyt server (the Pi). No trailing slash.
@@ -9,20 +9,20 @@ device_id = "tronbyt-1"
 # Per-device API key (Tronbyt UI -> device settings).
 api_key = "REPLACE_ME"
 # Installation ID we push under. One stable name; re-pushing overwrites.
-installation_id = "crunchybyt"
+installation_id = "matinee"
 
 [playback]
 # Seconds of content per chunk. Match the device's intervalSec for clean handoffs.
 chunk_seconds = 15
-# Frames per second inside each WebP. 10 looks fine for anime at 64x32.
+# Frames per second inside each WebP. 10 looks fine for animation at 64x32.
 fps = 10
 # How we fit the source into 64x32:
 #   "crop"      - scale up and center-crop (fills the screen, may clip edges)
 #   "letterbox" - scale down and pad with black (whole frame visible)
 #   "stretch"   - scale to fill, ignore aspect ratio (image is squashed)
-# This is the default. Override at runtime with `crunchybyt fit <mode>` —
+# This is the default. Override at runtime with `matinee fit <mode>` —
 # the override applies instantly in live mode; library chunks need a
-# `crunchybyt-ingest scan --force` to pick up the new mode.
+# `matinee-ingest scan --force` to pick up the new mode.
 fit_mode = "crop"
 # WebP quality 0-100. Lower = smaller file. 75 is a good balance.
 quality = 75
@@ -32,21 +32,21 @@ min_tail_seconds = 3
 [library]
 # Where pre-processed episode chunks live. Each episode becomes a directory
 # under <root>/<show>/<episode>/0000.webp ... NNNN.webp + manifest.json.
-chunks_root = "/srv/crunchybyt/chunks"
-# Where raw source files live (mkv/mp4). Used by `crunchybyt-ingest scan`.
-sources_root = "/srv/crunchybyt/sources"
+chunks_root = "/srv/matinee/chunks"
+# Where raw source files live (mkv/mp4). Used by `matinee-ingest scan`.
+sources_root = "/srv/matinee/sources"
 
 [daemon]
 # Local HTTP control surface (CLI talks to this). Bind to localhost.
 host = "127.0.0.1"
 port = 8765
 # SQLite file for position/state.
-state_db = "/srv/crunchybyt/state.sqlite"
+state_db = "/srv/matinee/state.sqlite"
 # Push the next chunk this many seconds before the device is expected to poll
 # again. Small positive value keeps a fresh chunk ready without racing.
 push_lead_seconds = 2
 
 # Live mode shares the [playback] settings above (fps, chunk_seconds, fit_mode,
 # quality). To start in live mode after a fresh install, just run
-#   crunchybyt live <youtube_url>
+#   matinee live <youtube_url>
 # once and the daemon will remember the URL across restarts.

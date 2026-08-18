@@ -52,13 +52,13 @@ class Config:
 
 
 def _candidate_paths() -> list[Path]:
-    env = os.environ.get("CRUNCHYBYT_CONFIG")
+    env = os.environ.get("MATINEE_CONFIG")
     paths: list[Path] = []
     if env:
         paths.append(Path(env).expanduser())
     paths.append(Path.cwd() / "config.toml")
-    paths.append(Path.home() / ".config" / "crunchybyt" / "config.toml")
-    paths.append(Path("/etc/crunchybyt/config.toml"))
+    paths.append(Path.home() / ".config" / "matinee" / "config.toml")
+    paths.append(Path("/etc/matinee/config.toml"))
     return paths
 
 
@@ -71,7 +71,7 @@ def load(path: Path | None = None) -> Config:
         else:
             tried = ", ".join(str(p) for p in _candidate_paths())
             raise FileNotFoundError(
-                f"No crunchybyt config found. Set CRUNCHYBYT_CONFIG or place "
+                f"No matinee config found. Set MATINEE_CONFIG or place "
                 f"config.toml at one of: {tried}"
             )
 

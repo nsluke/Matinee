@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PIL import Image
 
-log = logging.getLogger("crunchybyt.live")
+log = logging.getLogger("matinee.live")
 
 WIDTH, HEIGHT = 64, 32
 BYTES_PER_FRAME = WIDTH * HEIGHT * 3  # rgb24

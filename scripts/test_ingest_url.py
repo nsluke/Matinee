@@ -1,4 +1,4 @@
-"""Unit-ish test for the `crunchybyt-ingest url` wiring.
+"""Unit-ish test for the `matinee-ingest url` wiring.
 
 Verifies that ingest_url:
   - calls the downloader with the right args (URL, output template, max_height),
@@ -12,8 +12,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from crunchybyt import ingest as ingest_mod
-from crunchybyt.config import load as load_cfg
+from matinee import ingest as ingest_mod
+from matinee.config import load as load_cfg
 
 CONFIG_TEMPLATE = """
 [tronbyt]

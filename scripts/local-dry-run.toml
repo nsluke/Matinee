@@ -6,7 +6,7 @@
 server_url = "http://127.0.0.1:1"
 device_id = "dryrun"
 api_key = "x"
-installation_id = "crunchybyt"
+installation_id = "matinee"
 
 [playback]
 chunk_seconds = 15
@@ -16,11 +16,11 @@ quality = 75
 min_tail_seconds = 3
 
 [library]
-chunks_root = "/tmp/crunchybyt-dryrun/chunks"
-sources_root = "/tmp/crunchybyt-dryrun/sources"
+chunks_root = "/tmp/matinee-dryrun/chunks"
+sources_root = "/tmp/matinee-dryrun/sources"
 
 [daemon]
 host = "127.0.0.1"
 port = 8765
-state_db = "/tmp/crunchybyt-dryrun/state.sqlite"
+state_db = "/tmp/matinee-dryrun/state.sqlite"
 push_lead_seconds = 2

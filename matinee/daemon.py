@@ -23,7 +23,7 @@ from .config import Config, load
 from .state import LIBRARY_MODE, LIVE_MODE, VALID_FIT_MODES, Position, Store
 from .tronbyt import TronbytClient
 
-log = logging.getLogger("crunchybyt.daemon")
+log = logging.getLogger("matinee.daemon")
 
 
 def _resolve_next_chunk(
@@ -81,7 +81,7 @@ class Player:
         if self._thread is not None:
             return
         self._thread = threading.Thread(
-            target=self._run, name="crunchybyt-push", daemon=True,
+            target=self._run, name="matinee-push", daemon=True,
         )
         self._thread.start()
 
@@ -279,7 +279,7 @@ def build_app(player: Player) -> FastAPI:
         finally:
             player.stop()
 
-    app = FastAPI(title="crunchybyt", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="matinee", version="0.1.0", lifespan=lifespan)
 
     def _status_payload() -> StatusOut:
         p = player.store.get()

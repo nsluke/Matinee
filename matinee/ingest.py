@@ -4,9 +4,9 @@ One episode -> one directory containing 0000.webp, 0001.webp, ... and a
 manifest.json that lists the chunks and their durations.
 
 Usage:
-    crunchybyt-ingest <input.mkv> [--show "Dragon Ball Z"] [--episode "S01E01"]
-    crunchybyt-ingest scan     # walk sources_root, ingest anything new
-    crunchybyt-ingest url <youtube_url> --show "DBZ" --episode "S01E01"
+    matinee-ingest <input.mkv> [--show "Dragon Ball Z"] [--episode "S01E01"]
+    matinee-ingest scan     # walk sources_root, ingest anything new
+    matinee-ingest url <youtube_url> --show "DBZ" --episode "S01E01"
 """
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ def ingest_url(
     """Download a video URL via yt-dlp and ingest the result.
 
     The download lands in `sources_root/<show_slug>/<episode_slug>.<ext>`,
-    so a subsequent `crunchybyt-ingest scan` would also see it. If the
+    so a subsequent `matinee-ingest scan` would also see it. If the
     source already exists (any video extension) we skip the download unless
     `force` is set. With `cleanup=True` the downloaded source file is
     removed after a successful ingest.
@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Delete the downloaded source file after a successful ingest.",
     )
 
-    # Allow `crunchybyt-ingest path.mkv --show X --episode Y` without the
+    # Allow `matinee-ingest path.mkv --show X --episode Y` without the
     # `one` subcommand keyword.
     args, rest = p.parse_known_args(argv)
     if args.cmd is None and rest:

@@ -1,11 +1,19 @@
-# CrunchyByt
+# Matinee
 
-Play old anime episodes on a 64×32 Tronbyt display. Two modes:
+Play video on a 64×32 Tronbyt LED matrix display. Point it at video files you
+already have and it turns them into a tiny, endlessly-looping picture show.
 
-- **Library mode** — pre-process episodes into animated-WebP chunks once, daemon
-  pushes the next chunk on a timer. Resume-on-reboot, skip, episode rollover.
-- **Live mode** — point at a YouTube URL (e.g. a 24/7 anime channel), daemon
-  spawns `ffmpeg` and pushes chunks as they're transcoded.
+Two modes:
+
+- **Library mode** (supported) — pre-process your own video files into
+  animated-WebP chunks once, daemon pushes the next chunk on a timer.
+  Resume-on-reboot, skip, episode rollover.
+- **Live mode** (experimental) — point at a stream URL, daemon transcodes and
+  pushes chunks as they arrive. See the caveats below; it is not currently
+  reliable enough to build on.
+
+You supply the video. Matinee is a player, not a source — it ships no content
+and no default playlist.
 
 ## How it works
 
@@ -18,10 +26,10 @@ Play old anime episodes on a 64×32 Tronbyt display. Two modes:
   sliced into N-sec chunks  WebPs      POST .../push to Tronbyt.
 
   LIVE MODE
-  yt-dlp -g <url>          ffmpeg                   daemon
-  ────────────────         ──────                   ──────
-  resolve to HLS URL  ──►  scale + crop + 10 fps  ──►  group fps*chunk_seconds
-                           rgb24 frames to stdout      frames into one WebP via
+  yt-dlp                   ffmpeg                   daemon
+  ──────                   ──────                   ──────
+  fetch in bounded    ──►  scale + crop + 10 fps  ──►  group fps*chunk_seconds
+  chunks, pipe out         rgb24 frames to stdout      frames into one WebP via
                                                        Pillow, push, repeat.
 ```
 
@@ -56,17 +64,17 @@ Play old anime episodes on a 64×32 Tronbyt display. Two modes:
 ## Install (on the Pi)
 
 ```bash
-git clone <this repo> ~/CrunchyByt
-cd ~/CrunchyByt
+git clone <this repo> ~/Matinee
+cd ~/Matinee
 sudo ./scripts/install-pi.sh
-sudoedit /etc/crunchybyt/config.toml      # set device_id and api_key
+sudoedit /etc/matinee/config.toml      # set device_id and api_key
 ```
 
-Put episode files under `/srv/crunchybyt/sources/<Show Name>/...` then:
+Put episode files under `/srv/matinee/sources/<Show Name>/...` then:
 
 ```bash
-sudo -u pi /opt/crunchybyt/venv/bin/crunchybyt-ingest scan
-sudo systemctl enable --now crunchybyt
+sudo -u pi /opt/matinee/venv/bin/matinee-ingest scan
+sudo systemctl enable --now matinee
 ```
 
 ## Dev install (Mac)
@@ -82,17 +90,17 @@ brew install ffmpeg                     # for ingest
 
 ```bash
 # Single local file
-crunchybyt-ingest one /path/to/dbz_s01e01.mkv --show "Dragon Ball Z" --episode "S01E01"
+matinee-ingest one /path/to/my_show_s01e01.mkv --show "My Show" --episode "S01E01"
 
 # Walk sources_root (uses <root>/<show>/<file>.ext for naming)
-crunchybyt-ingest scan
+matinee-ingest scan
 
 # From a YouTube URL (yt-dlp downloads to sources_root, then ingests)
-crunchybyt-ingest url 'https://www.youtube.com/watch?v=...' \
-    --show "Dragon Ball Z" --episode "S01E01"
+matinee-ingest url 'https://www.youtube.com/watch?v=...' \
+    --show "My Show" --episode "S01E01"
 
 # Re-encode (overwrite)
-crunchybyt-ingest scan --force
+matinee-ingest scan --force
 ```
 
 Output goes under `chunks_root/<show>/<episode>/`:
@@ -115,25 +123,25 @@ Output goes under `chunks_root/<show>/<episode>/`:
 ## Control (the CLI talks to the daemon over localhost)
 
 ```bash
-crunchybyt status
-crunchybyt library
-crunchybyt play "Dragon Ball Z"            # first episode, chunk 0
-crunchybyt play "Dragon Ball Z" S01E03     # specific episode
-crunchybyt skip 5                          # jump 5 chunks forward (~75 s)
-crunchybyt skip -3                         # jump back
-crunchybyt next                            # next episode
-crunchybyt pause                           # library mode only
-crunchybyt resume
-crunchybyt live https://youtube.com/...    # switch to live mode (any yt-dlp URL)
-crunchybyt fit stretch                     # stretch image to fill the display
-crunchybyt fit crop                        # zoom + crop (default for 4:3 sources)
-crunchybyt fit letterbox                   # whole frame, black bars on the sides
-crunchybyt fit default                     # clear the override, use config.toml
+matinee status
+matinee library
+matinee play "My Show"            # first episode, chunk 0
+matinee play "My Show" S01E03     # specific episode
+matinee skip 5                          # jump 5 chunks forward (~75 s)
+matinee skip -3                         # jump back
+matinee next                            # next episode
+matinee pause                           # library mode only
+matinee resume
+matinee live https://youtube.com/...    # switch to live mode (any yt-dlp URL)
+matinee fit stretch                     # stretch image to fill the display
+matinee fit crop                        # zoom + crop (default for 4:3 sources)
+matinee fit letterbox                   # whole frame, black bars on the sides
+matinee fit default                     # clear the override, use config.toml
 ```
 
 ## Fit mode
 
-The 64×32 display is 2:1 but most anime is 4:3. `fit_mode` picks how to bridge
+The 64×32 display is 2:1 but most classic TV content is 4:3. `fit_mode` picks how to bridge
 the gap:
 
 - `crop` — scale up and center-crop. Fills the display, clips top/bottom edges.
@@ -142,10 +150,10 @@ the gap:
 - `stretch` — scale to exactly 64×32, ignoring the source aspect ratio. Fills
   the display but squashes the picture vertically.
 
-`crunchybyt fit <mode>` sets a runtime override stored in the daemon's state
+`matinee fit <mode>` sets a runtime override stored in the daemon's state
 DB. In **live mode** the next reconnect picks up the new mode (~one chunk of
 latency). In **library mode** the chunks are pre-encoded, so you also need to
-re-ingest: `crunchybyt-ingest scan --force`. `crunchybyt status` flags this for
+re-ingest: `matinee-ingest scan --force`. `matinee status` flags this for
 you — it shows both the desired fit and the fit baked into the chunk on disk.
 
 ## Live mode
@@ -160,9 +168,9 @@ you — it shows both the desired fit and the fit baked into the chunk on disk.
 > disk, no dependency on YouTube at playback time.
 
 ```bash
-crunchybyt live https://www.youtube.com/watch?v=<some-24/7-channel>
-crunchybyt live 'https://www.youtube.com/playlist?list=<playlist-id>'
-crunchybyt live 'https://www.youtube.com/watch?v=<vid>&list=<playlist-id>'
+matinee live https://www.youtube.com/watch?v=<some-24/7-channel>
+matinee live 'https://www.youtube.com/playlist?list=<playlist-id>'
+matinee live 'https://www.youtube.com/watch?v=<vid>&list=<playlist-id>'
 ```
 
 - `yt-dlp` fetches the stream in bounded chunks and pipes it to `ffmpeg`.
@@ -180,8 +188,8 @@ crunchybyt live 'https://www.youtube.com/watch?v=<vid>&list=<playlist-id>'
   or advances to the next playlist entry). Without this, a blocking frame read
   could wedge the daemon indefinitely and the device would loop the last chunk
   forever.
-- Switch back any time with `crunchybyt play <show>`. Live URL is remembered, so
-  `crunchybyt status` shows it even when you're in library mode.
+- Switch back any time with `matinee play <show>`. Live URL is remembered, so
+  `matinee status` shows it even when you're in library mode.
 
 ### Playlist URLs
 
@@ -192,7 +200,7 @@ on an entry (video ended, stream cut off, errored — doesn't matter) we advance
 to the next one. The playlist wraps when it hits the end, so it plays
 continuously.
 
-Progress doesn't persist across daemon restarts — every `crunchybyt live <URL>`
+Progress doesn't persist across daemon restarts — every `matinee live <URL>`
 or restart starts from entry 0. (That's a deliberate trade-off; ask if you
 want it persisted in the state DB.)
 
@@ -210,7 +218,7 @@ In `config.toml`:
 - `playback.chunk_seconds` — how long each WebP plays. Smaller = quicker
   reaction to skip/play commands but more pushes per minute. 15 is the
   Tronbyt-default device interval.
-- `playback.fps` — frames inside each WebP. 10 is a good default for anime at
+- `playback.fps` — frames inside each WebP. 10 is a good default for animation at
   64×32; raise for smoother motion (bigger files), lower if pushes time out.
 - `playback.fit_mode` — default fit when no runtime override is set. One of
   `"crop"`, `"letterbox"`, `"stretch"` (see [Fit mode](#fit-mode)).
@@ -221,7 +229,7 @@ In `config.toml`:
 ## File layout
 
 ```
-crunchybyt/
+matinee/
   config.py     load config.toml
   ingest.py     ffmpeg → 64x32 animated WebP chunks + manifest.json
   library.py    read manifests, list shows, find next episode
@@ -231,7 +239,7 @@ crunchybyt/
   daemon.py     mode dispatcher (library/live) + FastAPI control surface
   cli.py        talks to the daemon
 scripts/
-  install-pi.sh, crunchybyt.service, smoke.py
+  install-pi.sh, matinee.service, smoke.py
 config.example.toml
 pyproject.toml
 ```

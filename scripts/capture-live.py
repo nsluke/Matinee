@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("capture")
 
-OUT_DIR = Path("/tmp/crunchybyt-capture")
+OUT_DIR = Path("/tmp/matinee-capture")
 EXPECTED_KEY = "test-key"
 
 
@@ -98,7 +98,7 @@ def main() -> None:
 server_url = "http://127.0.0.1:{tronbyt_port}"
 device_id = "dev-1"
 api_key = "{EXPECTED_KEY}"
-installation_id = "crunchybyt"
+installation_id = "matinee"
 
 [playback]
 chunk_seconds = 5
@@ -126,8 +126,8 @@ push_lead_seconds = 0
     ).start()
     fake_ready.wait(5)
 
-    from crunchybyt.config import load
-    from crunchybyt.daemon import Player, build_app
+    from matinee.config import load
+    from matinee.daemon import Player, build_app
 
     cfg = load(cfg_path)
     player = Player(cfg)
@@ -167,7 +167,7 @@ push_lead_seconds = 0
         sys.exit("FAILED: no chunks captured (check yt-dlp/ffmpeg + URL)")
 
     print(f"\nCaptured chunks in: {OUT_DIR}")
-    print("Open one in Preview:  open /tmp/crunchybyt-capture/chunk_000.webp")
+    print("Open one in Preview:  open /tmp/matinee-capture/chunk_000.webp")
 
 
 if __name__ == "__main__":

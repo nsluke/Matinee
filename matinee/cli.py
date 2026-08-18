@@ -1,4 +1,4 @@
-"""crunchybyt CLI: thin wrapper over the daemon's HTTP API."""
+"""matinee CLI: thin wrapper over the daemon's HTTP API."""
 from __future__ import annotations
 
 import argparse
@@ -31,7 +31,7 @@ def _fmt_status(s: dict[str, Any]) -> str:
     if fit and mode == "library" and chunk_fit and chunk_fit != fit:
         fit_line = (
             f"fit:    {fit}  (chunks on disk: {chunk_fit} — "
-            f"run `crunchybyt-ingest scan --force` to re-render)"
+            f"run `matinee-ingest scan --force` to re-render)"
         )
     elif fit:
         fit_line = f"fit:    {fit}"
@@ -112,7 +112,7 @@ def cmd_library(api: httpx.Client, args: argparse.Namespace) -> None:
         print(json.dumps(shows, indent=2))
         return
     if not shows:
-        print("(library empty — run crunchybyt-ingest first)")
+        print("(library empty — run matinee-ingest first)")
         return
     for show in shows:
         print(f"{show['show']}  ({len(show['episodes'])} episodes)")
@@ -122,7 +122,7 @@ def cmd_library(api: httpx.Client, args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="crunchybyt")
+    p = argparse.ArgumentParser(prog="matinee")
     p.add_argument("--config", type=Path)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> None:
         with _api(args.config) as api:
             handlers[args.cmd](api, args)
     except httpx.ConnectError:
-        sys.exit("Could not reach the crunchybyt daemon. Is it running?")
+        sys.exit("Could not reach the matinee daemon. Is it running?")
     except httpx.HTTPStatusError as exc:
         sys.exit(f"daemon error: {exc.response.status_code} {exc.response.text}")
 

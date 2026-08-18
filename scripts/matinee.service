@@ -1,5 +1,5 @@
 [Unit]
-Description=CrunchyByt — anime player for Tronbyt
+Description=Matinee — video player for Tronbyt
 After=network-online.target
 Wants=network-online.target
 
@@ -8,12 +8,12 @@ Type=simple
 # Adjust these to match your Pi setup:
 User=pi
 Group=pi
-Environment=CRUNCHYBYT_CONFIG=/etc/crunchybyt/config.toml
+Environment=MATINEE_CONFIG=/etc/matinee/config.toml
 # yt-dlp lives in the venv's bin/, which isn't on systemd's default PATH.
 # (The daemon also tries sys.executable's sibling as a fallback, but this
 # keeps things obvious.)
-Environment=PATH=/opt/crunchybyt/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/crunchybyt/venv/bin/crunchybyt-daemon
+Environment=PATH=/opt/matinee/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/matinee/venv/bin/matinee-daemon
 Restart=on-failure
 RestartSec=5
 # Hardening. ReadWritePaths only lists dirs we actually write to (logs go to
@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/srv/crunchybyt
+ReadWritePaths=/srv/matinee
 
 [Install]
 WantedBy=multi-user.target

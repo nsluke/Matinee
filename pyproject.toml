@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "crunchybyt"
+name = "matinee"
 version = "0.1.0"
 description = "Play video on a Tronbyt 64x32 LED matrix display"
 readme = "README.md"
@@ -21,9 +21,9 @@ dependencies = [
 ]
 
 [project.scripts]
-crunchybyt = "crunchybyt.cli:main"
-crunchybyt-ingest = "crunchybyt.ingest:main"
-crunchybyt-daemon = "crunchybyt.daemon:main"
+matinee = "matinee.cli:main"
+matinee-ingest = "matinee.ingest:main"
+matinee-daemon = "matinee.daemon:main"
 
 [tool.setuptools.packages.find]
-include = ["crunchybyt*"]
+include = ["matinee*"]
