@@ -59,12 +59,30 @@ class FrameSource(ABC):
 
 
 class FFmpegFrameSource(FrameSource):
-    """Spawns ffmpeg piping raw rgb24 frames from a stream URL."""
+    """Spawns `yt-dlp | ffmpeg`, piping raw rgb24 frames from a YouTube URL.
 
-    def __init__(self, stream_url: str, params: LiveParams) -> None:
+    yt-dlp does the fetching rather than ffmpeg opening a googlevideo URL
+    directly. googlevideo now answers 403 to any unbounded range request
+    (`Range: bytes=0-`, or no Range at all) and only serves bounded ones like
+    `bytes=0-1048575`. ffmpeg offers no way to issue bounded ranges, so every
+    direct fetch failed; yt-dlp's --http-chunk-size makes them bounded.
+    """
+
+    def __init__(self, yt_url: str, params: LiveParams) -> None:
         self._stall_timeout = params.stall_timeout
+        yt_dlp = _find_executable("yt-dlp")
+        if yt_dlp is None:
+            raise LiveResolveError(
+                "yt-dlp not found. pip install yt-dlp (or apt install yt-dlp)."
+            )
+        self._fetch = subprocess.Popen(
+            self._fetch_cmd(yt_dlp, yt_url),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # see the ffmpeg stderr note below
+        )
         self._proc = subprocess.Popen(
-            self._cmd(stream_url, params),
+            self._cmd(params),
+            stdin=self._fetch.stdout,
             stdout=subprocess.PIPE,
             # Discard stderr instead of PIPE: we never drain it, and during a
             # reconnect-error storm an unread 64K stderr pipe fills and blocks
@@ -73,6 +91,9 @@ class FFmpegFrameSource(FrameSource):
             stderr=subprocess.DEVNULL,
             bufsize=0,  # unbuffered: select() must see the real pipe state
         )
+        # Drop our own handle on the read end so ffmpeg is its only reader —
+        # otherwise yt-dlp exiting never reaches ffmpeg as EOF.
+        self._fetch.stdout.close()
 
     @staticmethod
     def _vf(fit_mode: str, fps: int) -> str:
@@ -95,13 +116,31 @@ class FFmpegFrameSource(FrameSource):
             )
         return f"fps={fps},{scale}"
 
+    @staticmethod
+    def _fetch_cmd(yt_dlp: str, yt_url: str) -> list[str]:
+        return [
+            yt_dlp, "-o", "-", "--no-warnings", "--no-playlist",
+            # The load-bearing flag: forces bounded byte ranges (see class
+            # docstring). Without it googlevideo 403s and the pipeline yields
+            # zero frames. 1M measured empirically: googlevideo serves the
+            # *first* bounded range on a freshly resolved URL and 403s later
+            # ones, so a session yields roughly one range's worth of video
+            # (~3 chunks) and then ends. Raising this to 10M did not buy more
+            # video — the larger range is refused outright and sessions
+            # produced nothing at all. Do not "optimise" this upward.
+            "--http-chunk-size", "1M",
+            "-f", LIVE_FORMAT,
+            "--retries", "3", "--socket-timeout", "15",
+            yt_url,
+        ]
+
     @classmethod
-    def _cmd(cls, stream_url: str, p: LiveParams) -> list[str]:
+    def _cmd(cls, p: LiveParams) -> list[str]:
+        # No -reconnect flags: the input is a pipe, not HTTP. Retrying the
+        # fetch is yt-dlp's job now.
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-reconnect", "1", "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "30",
-            "-i", stream_url,
+            "-i", "pipe:0",
             "-vf", cls._vf(p.fit_mode, p.fps),
             "-pix_fmt", "rgb24",
             "-f", "rawvideo",
@@ -116,12 +155,16 @@ class FFmpegFrameSource(FrameSource):
         )
 
     def close(self) -> None:
-        if self._proc.poll() is None:
-            self._proc.kill()
-        try:
-            self._proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
+        # ffmpeg first, then the fetcher: killing yt-dlp first would leave
+        # ffmpeg briefly reading a dead pipe. Both must die or each advanced
+        # session leaks a yt-dlp holding a socket.
+        for proc in (self._proc, self._fetch):
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def _read_exact(fd: int, n: int, idle_timeout: float | None = None) -> bytes | None:
@@ -169,7 +212,23 @@ def _find_executable(name: str) -> str | None:
     return shutil.which(name)
 
 
-def resolve_stream_url(yt_url: str, timeout: float = 30.0) -> str:
+# Everything downstream is scaled to 64x32, so pulling anything above ~240p is
+# wasted bandwidth and wasted decode on a throttled Pi — a 1080p pull can starve
+# ffmpeg badly enough to wedge the render queue. Video-only: there is no audio
+# path in this pipeline. avc1 is preferred over the same resolution in AV1/VP9
+# because this Pi decodes H.264 far more cheaply in software.
+LIVE_FORMAT = (
+    "bv*[height<=240][vcodec^=avc1]"
+    "/bv*[height<=360][vcodec^=avc1]"
+    "/bv*[height<=360]"
+    "/worstvideo/worst"
+)
+
+
+# 60s, not 30: since YouTube began requiring a JS runtime to solve the
+# signature/n-param challenge, resolution runs the challenge through quickjs and
+# takes ~12s on this box instead of being a near-instant API call.
+def resolve_stream_url(yt_url: str, timeout: float = 60.0) -> str:
     """Resolve a YouTube watch/live URL to a direct stream URL via yt-dlp."""
     yt_dlp = _find_executable("yt-dlp")
     if yt_dlp is None:
@@ -178,7 +237,8 @@ def resolve_stream_url(yt_url: str, timeout: float = 30.0) -> str:
         )
     try:
         out = subprocess.run(
-            [yt_dlp, "-g", "--no-warnings", "--no-playlist", yt_url],
+            [yt_dlp, "-g", "--no-warnings", "--no-playlist",
+             "-f", LIVE_FORMAT, yt_url],
             check=True, capture_output=True, text=True, timeout=timeout,
         ).stdout
     except subprocess.CalledProcessError as exc:
@@ -284,7 +344,7 @@ def run_live_session(
     itself (matches the old single-URL behavior).
 
     Calls `on_chunk(bytes)` for every encoded chunk. If ffmpeg or yt-dlp dies,
-    backs off and retries. `source_factory(stream_url, params)` is injectable
+    backs off and retries. `source_factory(yt_url, params)` is injectable
     for tests; defaults to FFmpegFrameSource.
     """
     factory = source_factory or (lambda u, p: FFmpegFrameSource(u, p))
@@ -321,8 +381,15 @@ def run_live_session(
             "live session [%d/%d]: %s -> %s...",
             idx + 1, total, current_url, stream_url[:80],
         )
-        backoff = 1.0
-        source = factory(stream_url, params)
+        # NB: backoff is deliberately NOT reset here. Resolving successfully
+        # says nothing about whether we can actually fetch video, and resetting
+        # on resolve pinned the loop at ~13s per session forever — thousands of
+        # requests a day at YouTube while producing nothing, which is a good way
+        # to get the IP throttled. It resets only once chunks actually flow.
+        # The watch URL, not stream_url: yt-dlp re-resolves internally and does
+        # the fetching. resolve_stream_url above stays as a pre-flight check so
+        # an unavailable or DRM-locked entry is skipped before we spawn anything.
+        source = factory(current_url, params)
         emitted = 0
         try:
             for blob in chunk_stream(source, params, stop):
@@ -356,4 +423,5 @@ def run_live_session(
                 "[%d/%d] ended after %d chunks; advancing",
                 idx + 1, total, emitted,
             )
+            backoff = 1.0  # real video came through — resume full speed
         idx = (idx + 1) % total
