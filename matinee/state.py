@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .render import VALID_FIT_MODES  # noqa: F401  (re-exported for callers)
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS position (
@@ -22,6 +24,11 @@ CREATE TABLE IF NOT EXISTS position (
     live_url TEXT,
     fit_mode TEXT,
     updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
 );
 
 CREATE TABLE IF NOT EXISTS history (
@@ -44,7 +51,8 @@ MIGRATIONS = (
 LIBRARY_MODE = "library"
 LIVE_MODE = "live"
 
-VALID_FIT_MODES = ("crop", "letterbox", "stretch")
+# settings keys
+PIN_INSTALLATION_ID = "pin_installation_id"
 
 
 @dataclass
@@ -158,6 +166,23 @@ class Store:
                 (fit_mode, time.time()),
             )
         return self.get()
+
+    def get_setting(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM settings WHERE key = ?", (key,),
+            ).fetchone()
+        # No row_factory on this connection — rows are plain tuples.
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            self._db.commit()
 
     def log_push(self, show: str, episode: str, chunk_index: int) -> None:
         with self._lock:

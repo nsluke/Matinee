@@ -35,6 +35,19 @@ DEVICE_PATCHES: list[dict] = []
 INSTALL_PATCHES: list[dict] = []
 EXPECTED_KEY = "test-key"
 
+# Installations the device already has before we ever push, mimicking a real
+# Tronbyt with a few apps on it.
+PRESET_INSTALLS = {"1": "clock", "2": "weather"}
+# Installations the server has created for pushes, keyed by the push label.
+# The real server assigns its OWN id here and never exposes the label again,
+# which is why the daemon has to discover the id rather than assume it.
+PUSH_INSTALLS: dict[str, str] = {}
+INSTALL_PINNED: set[str] = set()
+
+
+def _all_install_ids() -> dict[str, str]:
+    return {**PRESET_INSTALLS, **{v: "pushed" for v in PUSH_INSTALLS.values()}}
+
 
 def make_fake_tronbyt() -> FastAPI:
     app = FastAPI()
@@ -46,13 +59,26 @@ def make_fake_tronbyt() -> FastAPI:
     @app.post("/v0/devices/{device_id}/push")
     def push(device_id: str, body: dict, authorization: str = Header(None)):
         _auth(authorization)
+        label = body.get("installationID")
+        if label not in PUSH_INSTALLS:
+            # A push under a new label creates a new installation with a
+            # server-assigned id, exactly as the real server does.
+            PUSH_INSTALLS[label] = str(len(_all_install_ids()) + 1)
         PUSHES.append({
             "device_id": device_id,
-            "installationID": body.get("installationID"),
+            "installationID": label,
             "bytes": len(base64.b64decode(body["image"])),
             "background": body.get("background", False),
         })
         return "WebP received."
+
+    @app.get("/v0/devices/{device_id}/installations")
+    def list_installs(device_id: str, authorization: str = Header(None)):
+        _auth(authorization)
+        return {"installations": [
+            {"id": iid, "appID": app_id, "pinned": iid in INSTALL_PINNED}
+            for iid, app_id in _all_install_ids().items()
+        ]}
 
     @app.patch("/v0/devices/{device_id}")
     def patch_device(device_id: str, body: dict, authorization: str = Header(None)):
@@ -65,7 +91,11 @@ def make_fake_tronbyt() -> FastAPI:
         device_id: str, iname: str, body: dict, authorization: str = Header(None),
     ):
         _auth(authorization)
+        if iname not in _all_install_ids():
+            raise HTTPException(404, "App not found")
         INSTALL_PATCHES.append({"device_id": device_id, "iname": iname, **body})
+        if body.get("pinned"):
+            INSTALL_PINNED.add(iname)
         return {"ok": True}
 
     return app
@@ -177,8 +207,31 @@ def install_live_stubs(frames_per_session: int) -> None:
     live_mod.run_live_session = patched
 
 
+def check_settings_roundtrip() -> None:
+    """The settings table backs the persisted pin id, which is only read back
+    on a *later* daemon start — so nothing else in this test would notice it
+    being unreadable."""
+    import tempfile
+
+    from matinee.state import PIN_INSTALLATION_ID, Store
+
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(Path(td) / "settings.sqlite")
+        try:
+            assert st.get_setting(PIN_INSTALLATION_ID) is None, "unset should be None"
+            st.set_setting(PIN_INSTALLATION_ID, "9")
+            assert st.get_setting(PIN_INSTALLATION_ID) == "9", "read-back failed"
+            st.set_setting(PIN_INSTALLATION_ID, "11")
+            assert st.get_setting(PIN_INSTALLATION_ID) == "11", "upsert failed"
+        finally:
+            st.close()
+    print("settings round-trip: ok")
+
+
 def main() -> None:
     import tempfile
+
+    check_settings_roundtrip()
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -275,6 +328,20 @@ def main() -> None:
             print(f"device patches:     {DEVICE_PATCHES}")
             print(f"install patches:    {INSTALL_PATCHES}")
             assert any(p.get("intervalSec") == 1 for p in DEVICE_PATCHES)
+
+            # Pinning must target the id the server assigned to our pushed
+            # installation, not the label we push under. Addressing it by the
+            # label 404s on a real server, which used to be swallowed and left
+            # the device rotating its other apps.
+            our_id = PUSH_INSTALLS["matinee"]
+            assert our_id not in PRESET_INSTALLS, "test setup: id collision"
+            pins = [p for p in INSTALL_PATCHES if p.get("pinned")]
+            assert pins, "daemon never pinned an installation"
+            assert all(p["iname"] == our_id for p in pins), (
+                f"pinned the wrong installation: {pins} (expected id {our_id})"
+            )
+            assert len(pins) == 1, f"pinned repeatedly: {pins}"
+            print(f"pinned installation: {our_id} (push label was 'matinee')")
 
             # ---- live mode -------------------------------------------------
             print("\n--- live mode ---")

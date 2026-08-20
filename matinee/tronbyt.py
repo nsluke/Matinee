@@ -53,10 +53,22 @@ class TronbytClient:
         )
         r.raise_for_status()
 
-    def pin_installation(self) -> None:
-        """Pin our installation so the device only ever shows our content."""
+    def list_installation_ids(self) -> set[str]:
+        """Server-assigned ids of every installation on the device."""
+        r = self._client.get(f"/v0/devices/{self._cfg.device_id}/installations")
+        r.raise_for_status()
+        return {i["id"] for i in r.json().get("installations", [])}
+
+    def pin_installation(self, installation: str) -> None:
+        """Pin an installation so the device only ever shows its content.
+
+        `installation` is the server's own id for the installation (as
+        returned by list_installation_ids), NOT the installation_id we tag
+        pushes with — the push field is just a label, and the server assigns
+        the installation its own id.
+        """
         r = self._client.patch(
-            f"/v0/devices/{self._cfg.device_id}/installations/{self._cfg.installation_id}",
+            f"/v0/devices/{self._cfg.device_id}/installations/{installation}",
             json={"pinned": True},
         )
         r.raise_for_status()

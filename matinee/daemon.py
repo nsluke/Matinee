@@ -13,14 +13,20 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from . import library, live
 from .config import Config, load
-from .state import LIBRARY_MODE, LIVE_MODE, VALID_FIT_MODES, Position, Store
+from .state import (
+    LIBRARY_MODE,
+    LIVE_MODE,
+    PIN_INSTALLATION_ID,
+    VALID_FIT_MODES,
+    Position,
+    Store,
+)
 from .tronbyt import TronbytClient
 
 log = logging.getLogger("matinee.daemon")
@@ -74,6 +80,8 @@ class Player:
         self._thread: threading.Thread | None = None
         self.last_error: str | None = None
         self.last_push_at: float | None = None
+        self._pinned = False
+        self._ids_before_push: set[str] | None = None
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -134,13 +142,58 @@ class Player:
             self.client.set_default_interval(self.cfg.playback.chunk_seconds)
         except Exception as exc:  # noqa: BLE001
             log.warning("set_default_interval failed (continuing): %s", exc)
+        # Pinning has to wait until after our first push: the push API's
+        # installationID is only a label, and the installation a push creates
+        # gets a server-assigned id, which is what the pin endpoint addresses.
+        # Record the ids that exist beforehand so _ensure_pinned can spot ours.
+        if self.store.get_setting(PIN_INSTALLATION_ID) is None:
+            try:
+                self._ids_before_push = self.client.list_installation_ids()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("couldn't list installations (continuing): %s", exc)
+
+    def _push(self, data: bytes) -> None:
+        """Push a chunk, then make sure our installation is pinned."""
+        self.client.push_webp(data)
+        self._ensure_pinned()
+
+    def _ensure_pinned(self) -> None:
+        """Pin the installation our pushes land in, once.
+
+        We identify it by diffing the device's installation list across our
+        first push — the server names the installation itself, and nothing in
+        the API maps our push label back to that name. The id is persisted so
+        later restarts pin directly instead of repeating the diff.
+        """
+        if self._pinned:
+            return
+        iid = self.store.get_setting(PIN_INSTALLATION_ID)
+        if iid is None:
+            if self._ids_before_push is None:
+                self._pinned = True  # no snapshot to compare against
+                return
+            try:
+                created = self.client.list_installation_ids() - self._ids_before_push
+            except Exception as exc:  # noqa: BLE001
+                log.warning("couldn't list installations to find ours: %s", exc)
+                return
+            if len(created) != 1:
+                log.warning(
+                    "could not identify our installation to pin (%d candidates). "
+                    "Playback still works, but the device will keep rotating its "
+                    "other apps — pin the pushed app once in the Tronbyt UI.",
+                    len(created),
+                )
+                self._pinned = True  # don't repeat this on every push
+                return
+            iid = created.pop()
+            self.store.set_setting(PIN_INSTALLATION_ID, iid)
         try:
-            self.client.pin_installation()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 404:
-                log.warning("pin_installation failed (continuing): %s", exc)
+            self.client.pin_installation(iid)
+            log.info("pinned installation %s", iid)
         except Exception as exc:  # noqa: BLE001
-            log.warning("pin_installation failed (continuing): %s", exc)
+            log.warning("pin_installation(%s) failed (continuing): %s", iid, exc)
+        self._pinned = True
 
     # ---- library mode -------------------------------------------------------
 
@@ -172,7 +225,7 @@ class Player:
 
         chunk = ep.chunks[idx]
         data = library.chunk_path(ep, idx).read_bytes()
-        self.client.push_webp(data)
+        self._push(data)
         self.last_push_at = time.time()
         self.last_error = None
         self.store.log_push(ep.show, ep.episode, idx)
@@ -211,7 +264,7 @@ class Player:
 
     def _push_live_chunk(self, blob: bytes) -> None:
         try:
-            self.client.push_webp(blob)
+            self._push(blob)
         except Exception as exc:  # noqa: BLE001
             self.last_error = repr(exc)
             log.exception("push failed for live chunk")
