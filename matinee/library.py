@@ -5,8 +5,25 @@ Layout: <chunks_root>/<show>/<episode>/manifest.json + NNNN.webp
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+_DIGITS = re.compile(r"(\d+)")
+
+
+def _natural_key(name: str) -> tuple:
+    """Sort key that orders embedded numbers numerically.
+
+    Plain string sort puts "Episode 10" before "Episode 2", which silently
+    plays a show out of order — `scan` names episodes after their source
+    filename, so unpadded numbering is the common case rather than an edge
+    one. Zero-padded names are unaffected.
+    """
+    return tuple(
+        int(part) if part.isdigit() else part.lower()
+        for part in _DIGITS.split(name)
+    )
 
 
 @dataclass(frozen=True)
@@ -59,7 +76,10 @@ def load_episode(chunks_root: Path, show: str, episode: str) -> Episode | None:
 def list_shows(chunks_root: Path) -> list[str]:
     if not chunks_root.is_dir():
         return []
-    return sorted(p.name for p in chunks_root.iterdir() if p.is_dir())
+    return sorted(
+        (p.name for p in chunks_root.iterdir() if p.is_dir()),
+        key=_natural_key,
+    )
 
 
 def list_episodes(chunks_root: Path, show: str) -> list[Episode]:
@@ -67,7 +87,7 @@ def list_episodes(chunks_root: Path, show: str) -> list[Episode]:
     if not show_dir.is_dir():
         return []
     episodes = []
-    for ep_dir in sorted(show_dir.iterdir()):
+    for ep_dir in sorted(show_dir.iterdir(), key=lambda p: _natural_key(p.name)):
         if not ep_dir.is_dir():
             continue
         ep = _read_manifest(ep_dir / "manifest.json")
