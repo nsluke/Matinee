@@ -9,7 +9,6 @@ for a real ffmpeg subprocess.
 """
 from __future__ import annotations
 
-import io
 import logging
 import os
 import select
@@ -24,10 +23,14 @@ from pathlib import Path
 
 from PIL import Image
 
-log = logging.getLogger("matinee.live")
+from .render import (
+    BYTES_PER_FRAME,
+    encode_animation,
+    frame_from_bytes,
+    raw_video_cmd,
+)
 
-WIDTH, HEIGHT = 64, 32
-BYTES_PER_FRAME = WIDTH * HEIGHT * 3  # rgb24
+log = logging.getLogger("matinee.live")
 
 
 @dataclass(frozen=True)
@@ -96,27 +99,6 @@ class FFmpegFrameSource(FrameSource):
         self._fetch.stdout.close()
 
     @staticmethod
-    def _vf(fit_mode: str, fps: int) -> str:
-        if fit_mode == "crop":
-            scale = (
-                f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-                f"crop={WIDTH}:{HEIGHT}"
-            )
-        elif fit_mode == "letterbox":
-            scale = (
-                f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
-                f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black"
-            )
-        elif fit_mode == "stretch":
-            scale = f"scale={WIDTH}:{HEIGHT},setsar=1"
-        else:
-            raise ValueError(
-                f"Unknown fit_mode: {fit_mode}. "
-                f"Expected one of ('crop', 'letterbox', 'stretch')."
-            )
-        return f"fps={fps},{scale}"
-
-    @staticmethod
     def _fetch_cmd(yt_dlp: str, yt_url: str) -> list[str]:
         return [
             yt_dlp, "-o", "-", "--no-warnings", "--no-playlist",
@@ -138,15 +120,7 @@ class FFmpegFrameSource(FrameSource):
     def _cmd(cls, p: LiveParams) -> list[str]:
         # No -reconnect flags: the input is a pipe, not HTTP. Retrying the
         # fetch is yt-dlp's job now.
-        return [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-i", "pipe:0",
-            "-vf", cls._vf(p.fit_mode, p.fps),
-            "-pix_fmt", "rgb24",
-            "-f", "rawvideo",
-            "-an", "-sn",
-            "-",
-        ]
+        return raw_video_cmd("pipe:0", p.fit_mode, p.fps)
 
     def read_frame(self) -> bytes | None:
         assert self._proc.stdout is not None
@@ -295,15 +269,7 @@ def resolve_playlist(url: str, timeout: float = 60.0) -> list[str]:
 
 
 def _encode_chunk(frames: list[Image.Image], params: LiveParams) -> bytes:
-    out = io.BytesIO()
-    duration_ms = max(1, int(1000 / params.fps))
-    frames[0].save(
-        out, format="WEBP",
-        save_all=True, append_images=frames[1:],
-        duration=duration_ms, loop=0,
-        quality=params.quality, method=4,
-    )
-    return out.getvalue()
+    return encode_animation(frames, params.fps, params.quality)
 
 
 def chunk_stream(
@@ -318,7 +284,7 @@ def chunk_stream(
         raw = source.read_frame()
         if raw is None:
             break
-        frames.append(Image.frombytes("RGB", (WIDTH, HEIGHT), raw))
+        frames.append(frame_from_bytes(raw))
         if len(frames) >= params.frames_per_chunk:
             yield _encode_chunk(frames, params)
             frames = []

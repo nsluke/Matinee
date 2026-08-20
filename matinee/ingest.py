@@ -13,14 +13,22 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from PIL import Image
+
 from .config import Config, PlaybackCfg, load
+from .render import (
+    BYTES_PER_FRAME,
+    encode_animation,
+    frame_from_bytes,
+    raw_video_cmd,
+)
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm"}
 SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -63,45 +71,84 @@ def probe_duration(path: Path) -> float:
     return float(out.strip())
 
 
-VALID_FIT_MODES = ("crop", "letterbox", "stretch")
+def _read_exact(stream, n: int) -> bytes | None:
+    """Read exactly n bytes, or None at end of stream."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
 
 
-def _vf_for(fit_mode: str, fps: int) -> str:
-    if fit_mode == "crop":
-        scale_crop = (
-            "scale=64:32:force_original_aspect_ratio=increase,crop=64:32"
+def _write_chunk(
+    frames: list[Image.Image], out_dir: Path, idx: int, start: float,
+    pb: PlaybackCfg,
+) -> ChunkInfo:
+    fname = f"{idx:04d}.webp"
+    (out_dir / fname).write_bytes(
+        encode_animation(frames, pb.fps, pb.quality)
+    )
+    return ChunkInfo(idx, fname, start, len(frames) / pb.fps)
+
+
+def encode_episode(src: Path, out_dir: Path, pb: PlaybackCfg) -> list[ChunkInfo]:
+    """Decode src once, writing one animated WebP per chunk_seconds.
+
+    A single ffmpeg pass streams raw rgb24 frames on stdout and Pillow
+    assembles each group of fps*chunk_seconds into a WebP. Decoding once and
+    encoding in-process avoids both re-seeking the source for every chunk and
+    any dependency on ffmpeg carrying the libwebp_anim encoder.
+    """
+    frames_per_chunk = pb.fps * pb.chunk_seconds
+    chunks: list[ChunkInfo] = []
+    frames: list[Image.Image] = []
+    idx = 0
+
+    # stderr to a file, not a pipe: nothing drains a pipe during the frame
+    # loop, and a full one would block ffmpeg's writes and wedge stdout too.
+    with tempfile.TemporaryFile() as errf:
+        proc = subprocess.Popen(
+            raw_video_cmd(str(src), pb.fit_mode, pb.fps),
+            stdout=subprocess.PIPE, stderr=errf,
         )
-    elif fit_mode == "letterbox":
-        scale_crop = (
-            "scale=64:32:force_original_aspect_ratio=decrease,"
-            "pad=64:32:(ow-iw)/2:(oh-ih)/2:color=black"
-        )
-    elif fit_mode == "stretch":
-        scale_crop = "scale=64:32,setsar=1"
-    else:
-        raise ValueError(
-            f"Unknown fit_mode: {fit_mode}. Expected one of {VALID_FIT_MODES}."
-        )
-    return f"fps={fps},{scale_crop}"
+        try:
+            while True:
+                raw = _read_exact(proc.stdout, BYTES_PER_FRAME)
+                if raw is None:
+                    break
+                frames.append(frame_from_bytes(raw))
+                if len(frames) == frames_per_chunk:
+                    chunks.append(
+                        _write_chunk(frames, out_dir, idx, idx * pb.chunk_seconds, pb)
+                    )
+                    print(
+                        f"[encode] {out_dir.name}/{chunks[-1].file}"
+                        f"  {chunks[-1].start:.1f}+{chunks[-1].duration:.1f}s",
+                        file=sys.stderr,
+                    )
+                    idx += 1
+                    frames = []
+        finally:
+            proc.stdout.close()
+            proc.wait()
 
+        if proc.returncode != 0:
+            errf.seek(0)
+            err = errf.read().decode(errors="replace").strip()
+            raise RuntimeError(
+                f"ffmpeg failed on {src.name} (exit {proc.returncode}): {err}"
+            )
 
-def encode_chunk(
-    src: Path, dst: Path, start: float, duration: float, pb: PlaybackCfg,
-) -> None:
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
-        "-i", str(src),
-        "-vf", _vf_for(pb.fit_mode, pb.fps),
-        "-an", "-sn",
-        "-c:v", "libwebp_anim",
-        "-loop", "0",
-        "-quality", str(pb.quality),
-        "-compression_level", "6",
-        "-preset", "picture",
-        str(dst),
-    ]
-    subprocess.run(cmd, check=True)
+    # Trailing partial chunk: keep it only if it is long enough to be worth
+    # showing, or if it is all we have.
+    if frames and (len(frames) / pb.fps >= pb.min_tail_seconds or idx == 0):
+        chunks.append(
+            _write_chunk(frames, out_dir, idx, idx * pb.chunk_seconds, pb)
+        )
+
+    return chunks
 
 
 def ingest_one(
@@ -124,22 +171,13 @@ def ingest_one(
     duration = probe_duration(src)
     chunk_s = cfg.playback.chunk_seconds
 
-    chunks: list[ChunkInfo] = []
-    idx = 0
-    start = 0.0
-    while start < duration:
-        remaining = duration - start
-        this_dur = min(chunk_s, remaining)
-        if this_dur < cfg.playback.min_tail_seconds and idx > 0:
-            break
-        fname = f"{idx:04d}.webp"
-        dst = out_dir / fname
-        print(f"[encode] {show_slug}/{ep_slug}/{fname}  {start:.1f}+{this_dur:.1f}s",
-              file=sys.stderr)
-        encode_chunk(src, dst, start, this_dur, cfg.playback)
-        chunks.append(ChunkInfo(idx, fname, start, this_dur))
-        idx += 1
-        start += chunk_s
+    chunks = encode_episode(src, out_dir, cfg.playback)
+
+    # A re-ingest at a different chunk length or fit leaves the old, longer
+    # run's files behind, and the daemon would happily push those strays.
+    for stale in out_dir.glob("*.webp"):
+        if stale.name not in {c.file for c in chunks}:
+            stale.unlink()
 
     manifest = Manifest(
         source=str(src),

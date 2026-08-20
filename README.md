@@ -19,11 +19,11 @@ and no default playlist.
 
 ```
   LIBRARY MODE
-  ingest (one-time)                    daemon push loop
-  ────────────────                     ────────────────
-  episode.mkv  ──ffmpeg──►  64x32      every chunk_seconds:
-  scale + crop + 10 fps     animated   read next chunk file,
-  sliced into N-sec chunks  WebPs      POST .../push to Tronbyt.
+  ingest (one-time)                         daemon push loop
+  ────────────────                          ────────────────
+  episode.mkv ──ffmpeg──► rgb24 ──Pillow──► 64x32   every chunk_seconds:
+  one decode pass,        frames  group     animated read next chunk file,
+  scale + crop + 10 fps           fps*N     WebPs    POST .../push to Tronbyt.
 
   LIVE MODE
   yt-dlp                   ffmpeg                   daemon
@@ -46,6 +46,9 @@ and no default playlist.
 - Tronbyt server running and reachable from the Pi (you have this).
 - Device API key (Tronbyt UI → device → "Show API key").
 - `ffmpeg` + `ffprobe` on whatever machine runs the ingest (Mac, Pi, etc.).
+  Any build will do — ffmpeg only has to *decode*. The WebPs are encoded
+  in-process by Pillow, so a build without `libwebp_anim` (Homebrew's,
+  for one) is fine.
 - `yt-dlp` (installed automatically as a Python dep). For YouTube sources only.
 - Python 3.10+.
 - **A JavaScript runtime, for any YouTube source.** YouTube needs one to solve
@@ -107,6 +110,27 @@ Output goes under `chunks_root/<show>/<episode>/`:
 ```
 0000.webp  0001.webp  …  NNNN.webp  manifest.json
 ```
+
+### Ingesting on a faster machine
+
+Ingest and playback are decoupled — the daemon only ever reads
+`chunks_root`, so nothing requires the two to happen on the same box. On a
+Raspberry Pi 3 a 1080p 10-bit HEVC source decodes far slower than realtime,
+and the source files dwarf the Pi's free space, so the practical route is to
+ingest on a desktop and copy the (tiny) chunks over:
+
+```bash
+# On the desktop, with chunks_root pointing somewhere local:
+matinee-ingest one "/Volumes/SD/My Show/ep01.mkv" --show "My Show" --episode "E01"
+
+# Then ship just the chunks:
+rsync -a ~/Matinee/chunks/ pi@tronbyt-host.local:/srv/matinee/chunks/
+```
+
+A 24-minute episode encodes in about 30 s on an Apple-silicon laptop and
+lands at roughly 5 MB of WebP, so a 25-episode season is ~120 MB on the Pi.
+Name episodes so they sort in order (`E01` … `E25`); the library plays them
+in sorted order and rolls over to the next one.
 
 ### `ingest url` notes
 
@@ -231,7 +255,8 @@ In `config.toml`:
 ```
 matinee/
   config.py     load config.toml
-  ingest.py     ffmpeg → 64x32 animated WebP chunks + manifest.json
+  render.py     shared 64x32 geometry, ffmpeg filter, Pillow WebP encode
+  ingest.py     one ffmpeg decode pass → WebP chunks + manifest.json
   library.py    read manifests, list shows, find next episode
   state.py      SQLite store: current position + push history + mode
   tronbyt.py    Tronbyt server HTTP client (push, pin, set interval)
