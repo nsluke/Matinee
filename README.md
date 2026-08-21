@@ -43,7 +43,7 @@ and no default playlist.
 
 ## Prerequisites
 
-- Tronbyt server running and reachable from the Pi (you have this).
+- A local Tronbyt server running and reachable.
 - Device API key (Tronbyt UI → device → "Show API key").
 - `ffmpeg` + `ffprobe` on whatever machine runs the ingest (Mac, Pi, etc.).
 - `yt-dlp` (installed automatically as a Python dep). For YouTube sources only.
