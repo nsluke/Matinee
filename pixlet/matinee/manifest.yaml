@@ -1,0 +1,19 @@
+---
+id: matinee
+name: Matinee
+summary: Play your own video library
+desc: >-
+  Plays video you already own on your Tronbyt. A Matinee daemon on your own
+  machine turns video files into 64x32 animated-WebP chunks and serves them;
+  this app displays whichever chunk is current. Requires a reachable Matinee
+  daemon, see https://github.com/nsluke/Matinee for setup.
+author: nsluke
+fileName: matinee.star
+packageName: matinee
+recommendedInterval: 0
+supports2x: false
+category: entertainment
+tags:
+  - video
+  - self-hosted
+  - media
