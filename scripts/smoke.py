@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import socket
 import threading
@@ -228,10 +229,67 @@ def check_settings_roundtrip() -> None:
     print("settings round-trip: ok")
 
 
+def check_uniform_chunk_encoding() -> None:
+    """Chunks served to Pixlet must have one delay for every frame.
+
+    Pixlet re-encodes an animation with a single delay rather than honouring
+    per-frame timing, so a chunk whose identical frames were merged (which is
+    what libwebp does by default) plays short by exactly the time folded into
+    those merged frames. Asserting on the encoded bytes is the only way to
+    catch a regression here — the animation still looks valid either way.
+    """
+    from PIL import Image
+
+    from matinee.render import (
+        anmf_durations,
+        encode_animation,
+        encode_uniform_animation,
+        expand_to_uniform,
+    )
+
+    fps, quality = 10, 75
+    # A long static run followed by motion — the shape that triggers merging.
+    frames = []
+    for i in range(150):
+        im = Image.new("RGB", (64, 32), (10, 10, 10))
+        if i > 40:
+            px = im.load()
+            for x in range(max(0, i % 64 - 3), min(64, i % 64 + 3)):
+                for y in range(10, 22):
+                    px[x, y] = (200, 80, 40)
+        frames.append(im)
+
+    merged = encode_animation(frames, fps, quality)
+    merged_durs = anmf_durations(merged)
+    assert len(set(merged_durs)) > 1, (
+        "test is not exercising anything: these frames were expected to merge"
+    )
+
+    uniform = encode_uniform_animation(frames, fps, quality)
+    durs = anmf_durations(uniform)
+    assert len(durs) == 150, f"lost frames: {len(durs)} != 150"
+    assert set(durs) == {100}, f"delays not uniform: {sorted(set(durs))[:5]}"
+    assert sum(durs) == 15000, f"wrong total duration: {sum(durs)}"
+    assert Image.open(io.BytesIO(uniform)).n_frames == 150, "not decodable"
+
+    # And a merged chunk already on disk can be re-timed without re-ingesting.
+    restored = anmf_durations(expand_to_uniform(merged, fps, quality))
+    assert set(restored) == {100}, f"expand left mixed delays: {set(restored)}"
+    assert sum(restored) == sum(merged_durs), (
+        f"expand changed duration: {sum(restored)} != {sum(merged_durs)}"
+    )
+    print(
+        f"uniform chunk encoding: ok "
+        f"(merged {len(merged_durs)} frames -> uniform {len(durs)}, "
+        f"{sum(durs)}ms preserved)"
+    )
+
+
 def main() -> None:
     import tempfile
 
     check_settings_roundtrip()
+    check_uniform_chunk_encoding()
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
