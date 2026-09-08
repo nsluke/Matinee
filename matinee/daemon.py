@@ -14,12 +14,13 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from . import library, live
-from .config import Config, load
+from . import library, live, render
+from .config import PULL_TRANSPORT, Config, load
 from .state import (
+    CHUNK_SERVED_AT,
     LIBRARY_MODE,
     LIVE_MODE,
     PIN_INSTALLATION_ID,
@@ -30,6 +31,14 @@ from .state import (
 from .tronbyt import TronbytClient
 
 log = logging.getLogger("matinee.daemon")
+
+
+class LibraryEmpty(Exception):
+    """No ingested episodes to serve."""
+
+
+class ChunkUnavailable(Exception):
+    """The chunk file for the current position could not be read."""
 
 
 def _resolve_next_chunk(
@@ -73,7 +82,15 @@ class Player:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.store = Store(cfg.daemon.state_db)
-        self.client = TronbytClient(cfg.tronbyt)
+        # Pull transport never talks to the Tronbyt server, so there are no
+        # credentials to build a client from.
+        self.pull = cfg.daemon.transport == PULL_TRANSPORT
+        self.client = None if self.pull else TronbytClient(cfg.tronbyt)
+        self._serve_lock = threading.Lock()
+        # (show, episode, index) -> uniform-delay bytes. One entry: the device
+        # re-fetches the same chunk several times per window, and re-timing it
+        # each time is pure waste on a Pi.
+        self._uniform: tuple[tuple[str, str, int], bytes] | None = None
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._live_stop: threading.Event | None = None
@@ -102,11 +119,16 @@ class Player:
         if self._thread is not None:
             self._thread.join(timeout=5)
         self.store.close()
-        self.client.close()
+        if self.client is not None:
+            self.client.close()
 
     def kick(self) -> None:
         """Wake the loop now. Aborts a live session so the dispatcher can
         re-read state (mode may have changed)."""
+        # Give whatever the user just selected a full chunk window. Without
+        # this, a play/skip that lands mid-window is advanced past on the
+        # very next fetch and its first chunk is never shown.
+        self.store.set_setting(CHUNK_SERVED_AT, repr(time.time()))
         self._wake.set()
         ls = self._live_stop
         if ls is not None:
@@ -123,6 +145,16 @@ class Player:
     # ---- run loop -----------------------------------------------------------
 
     def _run(self) -> None:
+        if self.pull:
+            # Nothing to drive: the device pulls, and GET /chunk advances the
+            # position. Sit here so the thread has an owner and stop() joins.
+            log.info(
+                "pull transport: serving chunks on http://%s:%d/chunk "
+                "(no pushing, no Tronbyt credentials in use)",
+                self.cfg.daemon.host, self.cfg.daemon.port,
+            )
+            self._stop.wait()
+            return
         self._configure_device_once()
         while not self._stop.is_set():
             try:
@@ -194,6 +226,79 @@ class Player:
         except Exception as exc:  # noqa: BLE001
             log.warning("pin_installation(%s) failed (continuing): %s", iid, exc)
         self._pinned = True
+
+    def serve_chunk(self) -> tuple[bytes, library.Episode, int]:
+        """Return the WebP to display right now, advancing when due.
+
+        Idempotent inside one chunk_seconds window. The Tronbyt server may
+        re-render a Starlark app more often than the device actually shows
+        it, so repeated fetches inside a window must return the same bytes
+        rather than racing through the episode. Advancement is therefore
+        driven by elapsed wall-clock time, not by the fetch itself.
+        """
+        with self._serve_lock:
+            now = time.time()
+            raw = self.store.get_setting(CHUNK_SERVED_AT)
+            served_at = float(raw) if raw else None
+            pos = self.store.get()
+
+            if served_at is None:
+                # First fetch: start the window here rather than advancing.
+                self.store.set_setting(CHUNK_SERVED_AT, repr(now))
+            elif not pos.paused and now - served_at >= self.cfg.playback.chunk_seconds:
+                # Advance by one chunk per elapsed window, never by several.
+                # A device that was unplugged should resume where it left
+                # off, not skip forward to wall-clock "now".
+                self.store.advance(pos.chunk_index + 1)
+                self.store.set_setting(CHUNK_SERVED_AT, repr(now))
+
+            # Re-resolve after any advance so episode rollover is applied.
+            resolved = _resolve_next_chunk(self.cfg, self.store.get())
+            if resolved is None:
+                raise LibraryEmpty()
+            ep, idx = resolved
+            pos = self.store.get()
+            if pos.show != ep.show or pos.episode != ep.episode or pos.chunk_index != idx:
+                self.store.set_position(ep.show, ep.episode, idx)
+
+            path = library.chunk_path(ep, idx)
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                # A truncated transfer shouldn't freeze the display forever;
+                # step over the hole and let the next fetch continue.
+                log.warning("chunk unreadable (%s); skipping it", exc)
+                self.store.advance(idx + 1)
+                self.store.set_setting(CHUNK_SERVED_AT, repr(now))
+                raise ChunkUnavailable(str(exc)) from exc
+
+            data = self._uniform_chunk((ep.show, ep.episode, idx), data)
+            self.last_push_at = now
+            self.last_error = None
+            return data, ep, idx
+
+    def _uniform_chunk(self, key: tuple[str, str, int], data: bytes) -> bytes:
+        """Chunk bytes re-timed for a player that uses one delay per animation.
+
+        Pixlet is such a player, so a chunk with merged frames would play
+        short. Cached because the same chunk is fetched repeatedly.
+        """
+        if self._uniform is not None and self._uniform[0] == key:
+            return self._uniform[1]
+        durations = render.anmf_durations(data)
+        if len(set(durations)) <= 1:
+            out = data  # already uniform; nothing to do
+        else:
+            try:
+                out = render.expand_to_uniform(
+                    data, self.cfg.playback.fps, self.cfg.playback.quality,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Serving a slightly fast chunk beats serving nothing.
+                log.warning("could not re-time chunk %s: %s", key, exc)
+                out = data
+        self._uniform = (key, out)
+        return out
 
     # ---- library mode -------------------------------------------------------
 
@@ -354,6 +459,42 @@ def build_app(player: Player) -> FastAPI:
     @app.get("/status", response_model=StatusOut)
     def status() -> StatusOut:
         return _status_payload()
+
+    @app.get("/chunk")
+    def chunk() -> Response:
+        """Serve the current chunk as WebP, for the pull transport.
+
+        This is what the Pixlet app on the Tronbyt server fetches. It is a
+        plain image response so the app is a one-liner:
+            render.Image(src = http.get(url).body())
+        """
+        if player.store.get().mode == LIVE_MODE:
+            raise HTTPException(
+                409, "live mode has no chunks on disk to serve; "
+                     "switch to a show with /play",
+            )
+        try:
+            data, ep, idx = player.serve_chunk()
+        except LibraryEmpty:
+            raise HTTPException(
+                503, "library is empty — run matinee-ingest first",
+            ) from None
+        except ChunkUnavailable as exc:
+            raise HTTPException(
+                503, f"chunk unavailable, skipping: {exc}",
+            ) from None
+        return Response(
+            content=data,
+            media_type="image/webp",
+            headers={
+                # The whole point is that each fetch may return new content;
+                # nothing between us and the device should hold a copy.
+                "Cache-Control": "no-store, max-age=0",
+                "X-Matinee-Show": ep.show,
+                "X-Matinee-Episode": ep.episode,
+                "X-Matinee-Chunk": f"{idx}/{ep.chunk_count}",
+            },
+        )
 
     @app.get("/library", response_model=list[ShowOut])
     def get_library() -> list[ShowOut]:

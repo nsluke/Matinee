@@ -144,6 +144,55 @@ in sorted order and rolls over to the next one.
   you only want the WebP chunks on disk.
 - Use the actual video URL, not a playlist URL (we pass `--no-playlist`).
 
+## Transports: push or pull
+
+There are two ways for chunks to reach the device, set by `[daemon] transport`.
+
+**`"push"` (default)** — the daemon POSTs each chunk to the Tronbyt server. It
+needs `[tronbyt]` credentials (device id + API key) and pins an installation so
+the device shows only us.
+
+**`"pull"`** — the daemon serves chunks over HTTP and a small Pixlet app on the
+Tronbyt server fetches them. Nothing talks to the Tronbyt API, so the whole
+`[tronbyt]` section goes away — no device id, no API key, no pinning, and the
+app is configured in the Tronbyt web UI like any other:
+
+```toml
+[daemon]
+transport = "pull"
+host = "172.18.0.1"   # an address the Tronbyt server can reach
+port = 8766
+```
+
+Then install `pixlet/matinee/matinee.star` as a custom app and point its
+**Matinee URL** field at `http://<host>:<port>/chunk`.
+
+`GET /chunk` returns the chunk for right now as `image/webp`. It is idempotent
+inside one `chunk_seconds` window — the server re-renders an app more often
+than the device displays it, so repeated fetches must return the same bytes
+rather than racing through the episode. Position still lives in the daemon, so
+`play`, `skip`, `next` and `pause` work exactly as they do when pushing.
+
+> If the daemon binds an address other than localhost, anything that can reach
+> it can also drive the control API. Prefer the Docker bridge address (what the
+> Tronbyt container uses to reach the host) over `0.0.0.0`; there is no auth on
+> the control endpoints yet.
+
+### Why pulled chunks are re-timed
+
+Pixlet re-encodes an animation with **one delay for the whole thing** rather
+than honouring per-frame durations (`encode/webp.go`). Chunks on disk do not
+have one delay: libwebp merges frames that are identical after lossy encoding
+and extends the previous frame's duration to compensate, which is invisible to
+a normal player but loses exactly that time under Pixlet. Measured across a
+real episode, a median chunk would play in 77% of its true duration and the
+worst in a third of it.
+
+So `/chunk` re-times each chunk to a flat `1000/fps` ms per frame before
+serving it, restoring the frames the merge folded away. This costs ~1.4 s on a
+Pi 3 and is cached per chunk, well inside a 15 s window. Chunks on disk are
+untouched, so switching transports needs no re-ingest.
+
 ## Control (the CLI talks to the daemon over localhost)
 
 ```bash
@@ -263,6 +312,8 @@ matinee/
   live.py       yt-dlp + ffmpeg + Pillow → live WebP chunks
   daemon.py     mode dispatcher (library/live) + FastAPI control surface
   cli.py        talks to the daemon
+pixlet/
+  matinee/       Pixlet app for the pull transport (.star + manifest)
 scripts/
   install-pi.sh, matinee.service, smoke.py
 config.example.toml

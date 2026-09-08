@@ -53,6 +53,7 @@ LIVE_MODE = "live"
 
 # settings keys
 PIN_INSTALLATION_ID = "pin_installation_id"
+CHUNK_SERVED_AT = "chunk_served_at"
 
 
 @dataclass
